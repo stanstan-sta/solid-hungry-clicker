@@ -60,7 +60,7 @@ RECONNECT_WAIT: int = 10
 # ──────────────────────────────────────────────────────────────────
 
 
-class JsonLogger:
+class ConsoleLogger:
     """Simple threadsafe console logger with timestamps."""
 
     @staticmethod
@@ -130,7 +130,7 @@ class HungryClicker:
         self.roll_count = 0
         self.running = True          # master kill-switch
         self._status = status_window
-        self._log = JsonLogger.log
+        self._log = ConsoleLogger.log
 
     # ── hotkey listener (runs in its own daemon thread) ─────────
 
@@ -158,7 +158,6 @@ class HungryClicker:
             context = pw.chromium.launch_persistent_context(
                 user_data_dir=SESSION_DIR,
                 headless=HEADLESS,
-                channel="chrome",               # use installed Chrome
                 args=[
                     "--disable-blink-features=AutomationControlled",
                 ],
