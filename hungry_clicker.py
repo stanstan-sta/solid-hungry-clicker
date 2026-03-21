@@ -63,6 +63,12 @@ BATCH_COMMAND_DELAY_MS: int = 40
 # How long (seconds) to wait for the Roll! button before retrying.
 BUTTON_TIMEOUT: int = 5
 
+# How long (ms) to wait for Discord's slash-command autocomplete menu to appear.
+AUTOCOMPLETE_TIMEOUT_MS: int = 2_000
+
+# Delay (seconds) between clicking successive Roll! buttons in a single cycle.
+MULTI_CLICK_DELAY: float = 0.3
+
 # How many extra scroll-to-bottom attempts when the button is not found.
 # Each attempt scrolls, waits briefly, then checks again.
 AUTOSCROLL_RETRIES: int = 3
@@ -307,7 +313,7 @@ class HungryClicker:
 
     @staticmethod
     def _submit_roll_command(page, command: str) -> bool:
-        """Focus Discord composer and submit a slash command."""
+        """Focus Discord composer, select the slash command from autocomplete, and submit."""
         selectors = (
             'div[role="textbox"][data-slate-editor="true"][aria-label^="Message"]',
             'div[role="textbox"][data-slate-editor="true"]',
@@ -326,38 +332,79 @@ class HungryClicker:
         page.keyboard.press("ControlOrMeta+A")
         page.keyboard.press("Backspace")
         page.keyboard.type(command)
+
+        # Wait for Discord's slash-command autocomplete menu to appear, then
+        # press Tab to select the bot command before submitting with Enter.
+        # This ensures the message is sent as an app command, not plain text.
+        autocomplete = page.locator(
+            '[class*="autocomplete"], [data-list-id="autocomplete-results"], ul[role="listbox"]'
+        ).first
+        try:
+            autocomplete.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
+            page.keyboard.press("Tab")
+        except (PwTimeout, Exception):
+            pass  # no autocomplete appeared – fall through to plain Enter
+
         page.keyboard.press("Enter")
         return True
 
     def _try_click_roll(self, page) -> bool:
-        """Locate and click the Roll! button, using multiple strategies.
+        """Locate and click every visible Roll! button, using multiple strategies.
 
-        Returns True if a click was performed, False otherwise.
+        Iterates through all matching buttons so that multiple pending "Roll!"
+        buttons (from several bot messages) are each clicked in a single cycle.
+
+        Returns True if at least one click was performed, False otherwise.
         """
         # Strategy 1: text-based locator (most reliable for labelled buttons).
-        btn = page.locator('button:has-text("Roll!")').last
+        buttons = page.locator('button:has-text("Roll!")')
 
         try:
-            btn.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
-            btn.click()
-            self.roll_count += 1
-            self._log(f"Roll #{self.roll_count} clicked ✓")
-            return True
+            buttons.first.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
         except (PwTimeout, Exception):
             pass
+        else:
+            clicked = False
+            count = buttons.count()
+            for i in range(count):
+                btn = buttons.nth(i)
+                try:
+                    if btn.is_visible():
+                        btn.click()
+                        self.roll_count += 1
+                        self._log(f"Roll #{self.roll_count} clicked ✓")
+                        clicked = True
+                        if i < count - 1:
+                            time.sleep(MULTI_CLICK_DELAY)
+                except (PwTimeout, Exception):
+                    pass
+            if clicked:
+                return True
 
         # Strategy 2: look for a blue-styled button that contains "Roll!"
-        fallback = page.locator(
+        fallback_buttons = page.locator(
             'button[style*="background-color"]:has-text("Roll!")'
-        ).last
+        )
         try:
-            fallback.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
-            fallback.click()
-            self.roll_count += 1
-            self._log(f"Roll #{self.roll_count} clicked (fallback) ✓")
-            return True
+            fallback_buttons.first.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
         except (PwTimeout, Exception):
             return False
+
+        clicked = False
+        count = fallback_buttons.count()
+        for i in range(count):
+            btn = fallback_buttons.nth(i)
+            try:
+                if btn.is_visible():
+                    btn.click()
+                    self.roll_count += 1
+                    self._log(f"Roll #{self.roll_count} clicked (fallback) ✓")
+                    clicked = True
+                    if i < count - 1:
+                        time.sleep(MULTI_CLICK_DELAY)
+            except (PwTimeout, Exception):
+                pass
+        return clicked
 
     def _autoscroll_and_retry(self, page) -> None:
         """Aggressively scroll to the bottom multiple times and re-check for
