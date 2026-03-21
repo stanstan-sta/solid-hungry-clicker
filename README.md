@@ -50,6 +50,24 @@ Rolling… #42  |  Status: Active
 
 Every successful click is also logged to the console.
 
+### Multi-`/roll` burst mode
+
+Press **F9** to queue and send multiple `/roll` commands in rapid succession (milliseconds apart).
+
+Configure the burst commands in `ROLL_COMMANDS_TEXT` using new lines or commas:
+
+```python
+ROLL_COMMANDS_TEXT = "/roll\n/roll 1d6\n/roll 2d20"
+# or: "/roll,/roll 1d6,/roll 2d20"
+```
+
+Timing controls:
+
+```python
+BATCH_INITIAL_DELAY_MS = 120  # wait before first /roll
+BATCH_COMMAND_DELAY_MS = 40   # wait between /roll commands
+```
+
 ---
 
 ## Running Minimised / in Background
@@ -69,6 +87,7 @@ COOLDOWN      = 2.5       # seconds between clicks
 HEADLESS      = False     # True = invisible browser
 SESSION_DIR   = "discord_session"
 TOGGLE_KEY    = Key.f8    # global hotkey
+BATCH_TRIGGER_KEY = Key.f9
 ```
 
 ---

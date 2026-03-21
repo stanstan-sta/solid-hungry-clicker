@@ -18,6 +18,7 @@ import random
 import time
 import tkinter as tk
 from datetime import datetime
+from queue import Empty, SimpleQueue
 
 from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
 from pynput import keyboard
@@ -46,6 +47,18 @@ SESSION_DIR: str = "discord_session"
 
 # Hotkey to toggle the auto-clicker on/off.
 TOGGLE_KEY = keyboard.Key.f8
+
+# Hotkey to trigger a burst of multiple /roll commands.
+BATCH_TRIGGER_KEY = keyboard.Key.f9
+
+# Commands to send when the burst hotkey is pressed. Supports newline or comma-separated values.
+ROLL_COMMANDS_TEXT: str = "/roll"
+
+# Delay before firing the first command in a burst (milliseconds).
+BATCH_INITIAL_DELAY_MS: int = 120
+
+# Delay between commands in a burst (milliseconds).
+BATCH_COMMAND_DELAY_MS: int = 40
 
 # How long (seconds) to wait for the Roll! button before retrying.
 BUTTON_TIMEOUT: int = 5
@@ -128,6 +141,8 @@ class HungryClicker:
     def __init__(self, status_window: StatusWindow) -> None:
         self.active = False          # controlled by F8
         self.roll_count = 0
+        self.batch_count = 0
+        self._pending_roll_batches: SimpleQueue[int] = SimpleQueue()
         self.running = True          # master kill-switch
         self._status = status_window
         self._log = ConsoleLogger.log
@@ -142,11 +157,17 @@ class HungryClicker:
                 self.active = not self.active
                 state = "ACTIVE" if self.active else "PAUSED"
                 self._log(f"F8 pressed → {state}")
+            elif key == BATCH_TRIGGER_KEY:
+                self._pending_roll_batches.put(1)
+                self._log("F9 pressed → queued /roll burst")
 
         listener = keyboard.Listener(on_press=_on_press)
         listener.daemon = True
         listener.start()
-        self._log(f"Hotkey listener ready – press {TOGGLE_KEY.name.upper()} to toggle")
+        self._log(
+            f"Hotkeys ready – {TOGGLE_KEY.name.upper()} toggle, "
+            f"{BATCH_TRIGGER_KEY.name.upper()} multi-/roll burst"
+        )
 
     # ── main loop ───────────────────────────────────────────────
 
@@ -177,6 +198,12 @@ class HungryClicker:
                         break
 
                     self._status.update(self.active, self.roll_count)
+
+                    try:
+                        self._pending_roll_batches.get_nowait()
+                        self._send_roll_burst(page)
+                    except Empty:
+                        pass
 
                     if not self.active:
                         time.sleep(0.15)
@@ -239,6 +266,67 @@ class HungryClicker:
         )
 
     # ── clicking ────────────────────────────────────────────────
+
+    @staticmethod
+    def _burst_commands() -> list[str]:
+        """Return configured /roll commands from the text setting."""
+        raw = ROLL_COMMANDS_TEXT.replace(",", "\n")
+        commands = []
+        for item in (part.strip() for part in raw.splitlines()):
+            if not item:
+                continue
+            if item.startswith("/roll"):
+                commands.append(item)
+        return commands
+
+    def _send_roll_burst(self, page) -> None:
+        """Send all configured /roll commands with millisecond spacing."""
+        commands = self._burst_commands()
+        if not commands:
+            self._log("No valid /roll commands configured in ROLL_COMMANDS_TEXT.")
+            return
+
+        self._ensure_connected(page)
+        self._scroll_to_bottom(page)
+
+        self._log(f"Running /roll burst ({len(commands)} commands)…")
+        time.sleep(max(BATCH_INITIAL_DELAY_MS, 0) / 1000)
+
+        for idx, command in enumerate(commands, start=1):
+            if not self.running:
+                return
+            if not self._submit_roll_command(page, command):
+                self._log(f"Failed to send burst command {idx}/{len(commands)}: {command}")
+                continue
+            self._log(f"Burst command {idx}/{len(commands)} sent ✓ {command}")
+            if idx < len(commands):
+                time.sleep(max(BATCH_COMMAND_DELAY_MS, 0) / 1000)
+
+        self.batch_count += 1
+        self._log(f"/roll burst complete #{self.batch_count}")
+
+    @staticmethod
+    def _submit_roll_command(page, command: str) -> bool:
+        """Focus Discord composer and submit a slash command."""
+        composer = page.locator(
+            'div[role="textbox"][data-slate-editor="true"][aria-label^="Message"]'
+        ).first
+        try:
+            composer.wait_for(state="visible", timeout=3_000)
+            composer.click()
+        except (PwTimeout, Exception):
+            composer = page.locator('div[role="textbox"][data-slate-editor="true"]').first
+            try:
+                composer.wait_for(state="visible", timeout=3_000)
+                composer.click()
+            except (PwTimeout, Exception):
+                return False
+
+        page.keyboard.press("ControlOrMeta+A")
+        page.keyboard.press("Backspace")
+        page.keyboard.type(command)
+        page.keyboard.press("Enter")
+        return True
 
     def _try_click_roll(self, page) -> bool:
         """Locate and click the Roll! button, using multiple strategies.
