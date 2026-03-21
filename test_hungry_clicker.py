@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
 def _install_stubs() -> None:
@@ -53,7 +54,6 @@ class HungryClickerBatchTests(unittest.TestCase):
         original_text = hungry_clicker.ROLL_COMMANDS_TEXT
         original_initial = hungry_clicker.BATCH_INITIAL_DELAY_MS
         original_between = hungry_clicker.BATCH_COMMAND_DELAY_MS
-        original_sleep = hungry_clicker.time.sleep
 
         calls = []
         sleeps = []
@@ -63,12 +63,14 @@ class HungryClickerBatchTests(unittest.TestCase):
             hungry_clicker.BATCH_INITIAL_DELAY_MS = 120
             hungry_clicker.BATCH_COMMAND_DELAY_MS = 40
 
-            clicker._ensure_connected = lambda _page: calls.append("connected")
-            clicker._scroll_to_bottom = lambda _page: calls.append("scrolled")
-            clicker._submit_roll_command = lambda _page, command: calls.append(command) or True
-            hungry_clicker.time.sleep = lambda seconds: sleeps.append(seconds)
-
-            clicker._send_roll_burst(object())
+            with patch.object(clicker, "_ensure_connected", side_effect=lambda _page: calls.append("connected")), patch.object(
+                clicker, "_scroll_to_bottom", side_effect=lambda _page: calls.append("scrolled")
+            ), patch.object(
+                clicker, "_submit_roll_command", side_effect=lambda _page, command: calls.append(command) or True
+            ), patch(
+                "hungry_clicker.time.sleep", side_effect=lambda seconds: sleeps.append(seconds)
+            ):
+                clicker._send_roll_burst(object())
 
             self.assertEqual(
                 calls,
@@ -80,7 +82,6 @@ class HungryClickerBatchTests(unittest.TestCase):
             hungry_clicker.ROLL_COMMANDS_TEXT = original_text
             hungry_clicker.BATCH_INITIAL_DELAY_MS = original_initial
             hungry_clicker.BATCH_COMMAND_DELAY_MS = original_between
-            hungry_clicker.time.sleep = original_sleep
 
 
 if __name__ == "__main__":

@@ -308,19 +308,20 @@ class HungryClicker:
     @staticmethod
     def _submit_roll_command(page, command: str) -> bool:
         """Focus Discord composer and submit a slash command."""
-        composer = page.locator(
-            'div[role="textbox"][data-slate-editor="true"][aria-label^="Message"]'
-        ).first
-        try:
-            composer.wait_for(state="visible", timeout=3_000)
-            composer.click()
-        except (PwTimeout, Exception):
-            composer = page.locator('div[role="textbox"][data-slate-editor="true"]').first
+        selectors = (
+            'div[role="textbox"][data-slate-editor="true"][aria-label^="Message"]',
+            'div[role="textbox"][data-slate-editor="true"]',
+        )
+        for selector in selectors:
+            composer = page.locator(selector).first
             try:
                 composer.wait_for(state="visible", timeout=3_000)
                 composer.click()
+                break
             except (PwTimeout, Exception):
-                return False
+                continue
+        else:
+            return False
 
         page.keyboard.press("ControlOrMeta+A")
         page.keyboard.press("Backspace")
