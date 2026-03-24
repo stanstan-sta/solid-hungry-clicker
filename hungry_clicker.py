@@ -333,6 +333,7 @@ class ClickerThread(threading.Thread):
         try:
             autocomplete_item.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
             autocomplete_item.click()
+            time.sleep(0.1)  # let Discord register the selection before submitting
             page.keyboard.press("Enter")
             return True
         except (PwTimeout, Exception):
