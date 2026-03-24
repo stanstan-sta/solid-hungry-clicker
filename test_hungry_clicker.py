@@ -149,6 +149,43 @@ class SubmitRollCommandTests(unittest.TestCase):
         self.assertNotIn("Tab", key_calls)
         self.assertIn("Enter", key_calls)
 
+    def test_sleep_before_enter_in_primary_path(self) -> None:
+        """Primary path: a small sleep is inserted after the autocomplete click and before Enter."""
+        page = self._make_page(autocomplete_item_visible=True)
+        thread = _make_thread()
+
+        call_order: list[str] = []
+
+        # Retrieve the autocomplete item mock that _make_page wired up
+        autocomplete_item = page.locator(
+            '[class*="autocomplete"] [role="button"],'
+            ' [data-list-id="autocomplete-results"] [role="option"]'
+        ).filter(has_text="/roll").first
+        original_click = autocomplete_item.click
+        autocomplete_item.click.side_effect = lambda: call_order.append("click")
+
+        original_press = page.keyboard.press
+        page.keyboard.press.side_effect = lambda key: call_order.append(f"press:{key}")
+
+        sleeps: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            call_order.append("sleep")
+
+        with patch("hungry_clicker.time.sleep", side_effect=_sleep):
+            result = thread._submit_roll_command(page, "/roll")
+
+        self.assertTrue(result)
+        self.assertIn("sleep", call_order)
+        self.assertAlmostEqual(sleeps[-1], 0.1)
+        # Verify the sleep comes after the click and before Enter
+        click_idx = call_order.index("click")
+        sleep_idx = call_order.index("sleep")
+        enter_idx = call_order.index("press:Enter")
+        self.assertLess(click_idx, sleep_idx, "sleep should come after autocomplete click")
+        self.assertLess(sleep_idx, enter_idx, "sleep should come before Enter press")
+
     def test_tab_fallback_when_autocomplete_click_fails(self) -> None:
         """Fallback path: when the item click fails but the container is visible, use Tab+Enter."""
         page = self._make_page(
