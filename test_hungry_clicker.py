@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from queue import SimpleQueue
 from unittest.mock import MagicMock, patch
 
 
@@ -29,28 +30,33 @@ _install_stubs()
 import hungry_clicker
 
 
-class _DummyStatus:
-    def update(self, *_args, **_kwargs) -> None:
-        return
+class _DummyMaster:
+    """Minimal stand-in for HungryClickerMaster used to construct ClickerThread."""
 
-    def pump(self) -> bool:
-        return True
+    def __init__(self) -> None:
+        self.running = True
+        self.active = True
+        self.pending_bursts = [SimpleQueue()]
 
 
-class HungryClickerBatchTests(unittest.TestCase):
+def _make_thread() -> hungry_clicker.ClickerThread:
+    return hungry_clicker.ClickerThread(0, "https://example.com", _DummyMaster())
+
+
+class ClickerThreadBatchTests(unittest.TestCase):
     def test_burst_commands_keeps_only_roll_lines(self) -> None:
         original = hungry_clicker.ROLL_COMMANDS_TEXT
         try:
             hungry_clicker.ROLL_COMMANDS_TEXT = "/roll\n  /roll 1d6  \nhello\n,/roll 2d4\n"
             self.assertEqual(
-                hungry_clicker.HungryClicker._burst_commands(),
+                hungry_clicker.ClickerThread._burst_commands(),
                 ["/roll", "/roll 1d6", "/roll 2d4"],
             )
         finally:
             hungry_clicker.ROLL_COMMANDS_TEXT = original
 
     def test_send_roll_burst_uses_millisecond_delays(self) -> None:
-        clicker = hungry_clicker.HungryClicker(_DummyStatus())
+        thread = _make_thread()
         original_text = hungry_clicker.ROLL_COMMANDS_TEXT
         original_initial = hungry_clicker.BATCH_INITIAL_DELAY_MS
         original_between = hungry_clicker.BATCH_COMMAND_DELAY_MS
@@ -63,21 +69,25 @@ class HungryClickerBatchTests(unittest.TestCase):
             hungry_clicker.BATCH_INITIAL_DELAY_MS = 120
             hungry_clicker.BATCH_COMMAND_DELAY_MS = 40
 
-            with patch.object(clicker, "_ensure_connected", side_effect=lambda _page: calls.append("connected")), patch.object(
-                clicker, "_scroll_to_bottom", side_effect=lambda _page: calls.append("scrolled")
+            with patch.object(
+                thread, "_ensure_connected", side_effect=lambda _page: calls.append("connected")
             ), patch.object(
-                clicker, "_submit_roll_command", side_effect=lambda _page, command: calls.append(command) or True
+                thread, "_scroll_to_bottom", side_effect=lambda _page: calls.append("scrolled")
+            ), patch.object(
+                thread,
+                "_submit_roll_command",
+                side_effect=lambda _page, command: calls.append(command) or True,
             ), patch(
                 "hungry_clicker.time.sleep", side_effect=lambda seconds: sleeps.append(seconds)
             ):
-                clicker._send_roll_burst(object())
+                thread._send_roll_burst(object())
 
             self.assertEqual(
                 calls,
                 ["connected", "scrolled", "/roll 1d6", "/roll 2d6", "/roll"],
             )
             self.assertEqual(sleeps, [0.12, 0.04, 0.04])
-            self.assertEqual(clicker.batch_count, 1)
+            self.assertEqual(thread.batch_count, 1)
         finally:
             hungry_clicker.ROLL_COMMANDS_TEXT = original_text
             hungry_clicker.BATCH_INITIAL_DELAY_MS = original_initial
@@ -85,7 +95,11 @@ class HungryClickerBatchTests(unittest.TestCase):
 
 
 class SubmitRollCommandTests(unittest.TestCase):
-    def _make_page(self, autocomplete_visible: bool) -> MagicMock:
+    def _make_page(
+        self,
+        autocomplete_item_visible: bool,
+        fallback_autocomplete_visible: bool = False,
+    ) -> MagicMock:
         """Build a minimal page mock for _submit_roll_command."""
         page = MagicMock()
 
@@ -93,26 +107,56 @@ class SubmitRollCommandTests(unittest.TestCase):
         composer.wait_for.return_value = None
         composer.click.return_value = None
 
-        locator_map: dict = {}
-
-        autocomplete = MagicMock()
-        if autocomplete_visible:
-            autocomplete.wait_for.return_value = None
+        # Autocomplete item (primary path – direct click)
+        autocomplete_item = MagicMock()
+        if autocomplete_item_visible:
+            autocomplete_item.wait_for.return_value = None
+            autocomplete_item.click.return_value = None
         else:
-            autocomplete.wait_for.side_effect = hungry_clicker.PwTimeout("timeout")
+            autocomplete_item.wait_for.side_effect = hungry_clicker.PwTimeout("timeout")
+
+        # Fallback autocomplete container (Tab path)
+        autocomplete_container = MagicMock()
+        if fallback_autocomplete_visible:
+            autocomplete_container.wait_for.return_value = None
+        else:
+            autocomplete_container.wait_for.side_effect = hungry_clicker.PwTimeout("timeout")
 
         def _locator(selector: str) -> MagicMock:
             loc = MagicMock()
-            loc.first = composer if "textbox" in selector else autocomplete
+            if "textbox" in selector:
+                loc.first = composer
+            elif 'role="button"' in selector or 'role="option"' in selector:
+                # autocomplete item locator – caller uses .filter(...).first
+                filtered = MagicMock()
+                filtered.first = autocomplete_item
+                loc.filter.return_value = filtered
+            else:
+                loc.first = autocomplete_container
             return loc
 
         page.locator.side_effect = _locator
         page.keyboard = MagicMock()
         return page
 
-    def test_tab_pressed_when_autocomplete_appears(self) -> None:
-        page = self._make_page(autocomplete_visible=True)
-        result = hungry_clicker.HungryClicker._submit_roll_command(page, "/roll")
+    def test_autocomplete_item_clicked_when_visible(self) -> None:
+        """Primary path: the specific autocomplete item is clicked; Tab is NOT pressed."""
+        page = self._make_page(autocomplete_item_visible=True)
+        thread = _make_thread()
+        result = thread._submit_roll_command(page, "/roll")
+        self.assertTrue(result)
+        key_calls = [call.args[0] for call in page.keyboard.press.call_args_list]
+        self.assertNotIn("Tab", key_calls)
+        self.assertIn("Enter", key_calls)
+
+    def test_tab_fallback_when_autocomplete_click_fails(self) -> None:
+        """Fallback path: when the item click fails but the container is visible, use Tab+Enter."""
+        page = self._make_page(
+            autocomplete_item_visible=False,
+            fallback_autocomplete_visible=True,
+        )
+        thread = _make_thread()
+        result = thread._submit_roll_command(page, "/roll")
         self.assertTrue(result)
         key_calls = [call.args[0] for call in page.keyboard.press.call_args_list]
         self.assertIn("Tab", key_calls)
@@ -120,8 +164,13 @@ class SubmitRollCommandTests(unittest.TestCase):
         self.assertLess(key_calls.index("Tab"), key_calls.index("Enter"))
 
     def test_enter_sent_even_without_autocomplete(self) -> None:
-        page = self._make_page(autocomplete_visible=False)
-        result = hungry_clicker.HungryClicker._submit_roll_command(page, "/roll")
+        """When no autocomplete appears at all, just Enter is sent (no Tab)."""
+        page = self._make_page(
+            autocomplete_item_visible=False,
+            fallback_autocomplete_visible=False,
+        )
+        thread = _make_thread()
+        result = thread._submit_roll_command(page, "/roll")
         self.assertTrue(result)
         key_calls = [call.args[0] for call in page.keyboard.press.call_args_list]
         self.assertNotIn("Tab", key_calls)
@@ -129,8 +178,8 @@ class SubmitRollCommandTests(unittest.TestCase):
 
 
 class TryClickRollTests(unittest.TestCase):
-    def _make_clicker(self) -> hungry_clicker.HungryClicker:
-        return hungry_clicker.HungryClicker(_DummyStatus())
+    def _make_thread(self) -> hungry_clicker.ClickerThread:
+        return _make_thread()
 
     def _make_page_with_buttons(self, count: int) -> MagicMock:
         """Return a page mock that has `count` visible Roll! buttons."""
@@ -153,35 +202,35 @@ class TryClickRollTests(unittest.TestCase):
         return page
 
     def test_clicks_all_visible_buttons(self) -> None:
-        clicker = self._make_clicker()
+        thread = self._make_thread()
         page = self._make_page_with_buttons(3)
         with patch("hungry_clicker.time.sleep"):
-            result = clicker._try_click_roll(page)
+            result = thread._try_click_roll(page)
         self.assertTrue(result)
-        self.assertEqual(clicker.roll_count, 3)
+        self.assertEqual(thread.roll_count, 3)
 
     def test_delay_between_multiple_clicks(self) -> None:
-        clicker = self._make_clicker()
+        thread = self._make_thread()
         page = self._make_page_with_buttons(2)
         sleeps = []
         with patch("hungry_clicker.time.sleep", side_effect=sleeps.append):
-            clicker._try_click_roll(page)
+            thread._try_click_roll(page)
         # One delay between 2 buttons, none after the last.
         self.assertEqual(len(sleeps), 1)
         self.assertAlmostEqual(sleeps[0], hungry_clicker.MULTI_CLICK_DELAY)
 
     def test_single_button_no_extra_delay(self) -> None:
-        clicker = self._make_clicker()
+        thread = self._make_thread()
         page = self._make_page_with_buttons(1)
         sleeps = []
         with patch("hungry_clicker.time.sleep", side_effect=sleeps.append):
-            result = clicker._try_click_roll(page)
+            result = thread._try_click_roll(page)
         self.assertTrue(result)
-        self.assertEqual(clicker.roll_count, 1)
+        self.assertEqual(thread.roll_count, 1)
         self.assertEqual(sleeps, [])
 
     def test_returns_false_when_no_buttons(self) -> None:
-        clicker = self._make_clicker()
+        thread = self._make_thread()
         page = MagicMock()
 
         no_buttons = MagicMock()
@@ -189,9 +238,9 @@ class TryClickRollTests(unittest.TestCase):
         no_buttons.first.wait_for.side_effect = hungry_clicker.PwTimeout("timeout")
         page.locator.return_value = no_buttons
 
-        result = clicker._try_click_roll(page)
+        result = thread._try_click_roll(page)
         self.assertFalse(result)
-        self.assertEqual(clicker.roll_count, 0)
+        self.assertEqual(thread.roll_count, 0)
 
 
 if __name__ == "__main__":

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Hungry-RNG Auto-Clicker for Discord
-====================================
-Automatically clicks the blue "Roll!" button in a Discord channel
-for the Hungry-RNG APP bot. Runs in its own browser window so your
-normal computer use is completely unaffected.
+Hungry-RNG Auto-Clicker for Discord (Multithreaded)
+====================================================
+Automatically clicks the blue "Roll!" button in multiple Discord channels.
+Runs in its own browser window for each channel specified.
 
 Usage:
     pip install playwright pynput
     playwright install chromium
     python hungry_clicker.py
 
-Press F8 to start / stop the auto-clicker at any time.
+Press F8 to start / stop all channels.
+Press F9 to trigger a /roll burst across all channels.
 """
 
 import random
+import threading
 import time
 import tkinter as tk
 from datetime import datetime
@@ -27,9 +28,11 @@ from pynput import keyboard
 # ██  SETTINGS – edit these to match your setup
 # ──────────────────────────────────────────────────────────────────
 
-# Discord channel URL for the Hungry-RNG bot chat.
-# Right-click the channel in Discord → Copy Link, then paste here.
-CHANNEL_URL: str = "https://discord.com/channels/YOUR_SERVER_ID/YOUR_CHANNEL_ID"
+# List of Discord channel URLs. Each will open in its own thread/browser.
+# Right-click a channel in Discord → Copy Link, then paste here.
+CHANNEL_URLS: list[str] = [
+    "https://discord.com/channels/YOUR_SERVER_ID/YOUR_CHANNEL_ID",
+]
 
 # Cooldown in seconds between roll attempts (minimum wait after each click).
 COOLDOWN: float = 2.5
@@ -41,14 +44,14 @@ RANDOM_DELAY_MAX: float = 0.9
 # Run the browser with a visible window (False = hidden / headless).
 HEADLESS: bool = False
 
-# Directory where login cookies / session data are persisted.
-# Delete this folder to force a fresh login.
-SESSION_DIR: str = "discord_session"
+# Base directory where login cookies / session data are persisted.
+# Each thread uses a sub-folder: discord_session_0, discord_session_1, …
+SESSION_DIR_BASE: str = "discord_session"
 
-# Hotkey to toggle the auto-clicker on/off.
+# Hotkey to toggle all channels on/off.
 TOGGLE_KEY = keyboard.Key.f8
 
-# Hotkey to trigger a burst of multiple /roll commands.
+# Hotkey to trigger a burst of multiple /roll commands on all channels.
 BATCH_TRIGGER_KEY = keyboard.Key.f9
 
 # Commands to send when the burst hotkey is pressed. Supports newline or comma-separated values.
@@ -69,8 +72,7 @@ AUTOCOMPLETE_TIMEOUT_MS: int = 2_000
 # Delay (seconds) between clicking successive Roll! buttons in a single cycle.
 MULTI_CLICK_DELAY: float = 0.3
 
-# How many extra scroll-to-bottom attempts when the button is not found.
-# Each attempt scrolls, waits briefly, then checks again.
+# How many scroll-and-retry attempts to make when the Roll! button is not visible.
 AUTOSCROLL_RETRIES: int = 3
 
 # How long (seconds) to wait before attempting reconnection.
@@ -89,34 +91,57 @@ class ConsoleLogger:
 
 
 class StatusWindow:
-    """Tiny always-on-top Tkinter window showing live stats."""
+    """Always-on-top Tkinter window showing aggregate and per-channel stats."""
 
-    def __init__(self) -> None:
+    def __init__(self, channel_count: int) -> None:
         self.root = tk.Tk()
-        self.root.title("Hungry-RNG Clicker")
+        self.root.title("Hungry-RNG Clicker (Multi)")
         self.root.attributes("-topmost", True)
         self.root.resizable(False, False)
-        self.root.geometry("310x80")
+        self.root.geometry(f"350x{100 + (channel_count * 20)}")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self._label = tk.Label(
+        self._main_label = tk.Label(
             self.root,
-            text="Status: Paused  |  Rolls: 0",
-            font=("Consolas", 11),
-            padx=10,
+            text="Status: Paused  |  Total: 0",
+            font=("Consolas", 12, "bold"),
             pady=10,
         )
-        self._label.pack(expand=True, fill="both")
+        self._main_label.pack()
+
+        self._stats_labels: list[tk.Label] = []
+        for i in range(channel_count):
+            lbl = tk.Label(
+                self.root,
+                text=f"Channel {i + 1}: 0 rolls",
+                font=("Consolas", 10),
+            )
+            lbl.pack()
+            self._stats_labels.append(lbl)
+
         self._should_close = False
 
     # ── public helpers ──────────────────────────────────────────
 
-    def update(self, active: bool, count: int) -> None:
+    def update(self, active: bool, roll_counts: list[int]) -> None:
         """Schedule a label update on the Tk main thread."""
-        status = "Active" if active else "Paused"
-        text = f"Rolling… #{count}  |  Status: {status}"
+        status = "ACTIVE" if active else "PAUSED"
+        total = sum(roll_counts)
         try:
-            self.root.after(0, lambda: self._label.config(text=text))
+            self.root.after(
+                0,
+                lambda: self._main_label.config(
+                    text=f"Status: {status}  |  Total: {total}",
+                    fg="green" if active else "red",
+                ),
+            )
+            for i, count in enumerate(roll_counts):
+                self.root.after(
+                    0,
+                    lambda i=i, count=count: self._stats_labels[i].config(
+                        text=f"Channel {i + 1}: {count} rolls"
+                    ),
+                )
         except tk.TclError:
             pass  # window already destroyed
 
@@ -139,55 +164,28 @@ class StatusWindow:
         self.root.destroy()
 
 
-class HungryClicker:
-    """Core automation: opens Discord in a persistent Chromium profile,
-    scrolls the chat to the bottom, and clicks the Roll! button in a loop.
-    """
+class ClickerThread(threading.Thread):
+    """Worker thread: manages one Playwright browser instance for a single URL."""
 
-    def __init__(self, status_window: StatusWindow) -> None:
-        self.active = False          # controlled by F8
+    def __init__(self, index: int, url: str, master: "HungryClickerMaster") -> None:
+        super().__init__(daemon=True)
+        self.index = index
+        self.url = url
+        self.master = master
         self.roll_count = 0
         self.batch_count = 0
-        self._pending_roll_batches: SimpleQueue[int] = SimpleQueue()
-        self.running = True          # master kill-switch
-        self._status = status_window
-        self._log = ConsoleLogger.log
+        self.session_dir = f"{SESSION_DIR_BASE}_{index}"
+        self._log = lambda msg: ConsoleLogger.log(f"[Ch{index + 1}] {msg}")
 
-    # ── hotkey listener (runs in its own daemon thread) ─────────
-
-    def start_hotkey_listener(self) -> None:
-        """Listen for the global toggle hotkey in a background thread."""
-
-        def _on_press(key: keyboard.Key) -> None:
-            if key == TOGGLE_KEY:
-                self.active = not self.active
-                state = "ACTIVE" if self.active else "PAUSED"
-                self._log(f"F8 pressed → {state}")
-            elif key == BATCH_TRIGGER_KEY:
-                self._pending_roll_batches.put(1)
-                self._log("F9 pressed → queued /roll burst")
-
-        listener = keyboard.Listener(on_press=_on_press)
-        listener.daemon = True
-        listener.start()
-        self._log(
-            f"Hotkeys ready – {TOGGLE_KEY.name.upper()} toggle, "
-            f"{BATCH_TRIGGER_KEY.name.upper()} multi-/roll burst"
-        )
-
-    # ── main loop ───────────────────────────────────────────────
+    # ── thread entry ────────────────────────────────────────────
 
     def run(self) -> None:
-        """Launch the browser and enter the click loop."""
-        self._log("Launching Chromium with persistent session…")
-
+        self._log(f"Starting automation for {self.url}")
         with sync_playwright() as pw:
             context = pw.chromium.launch_persistent_context(
-                user_data_dir=SESSION_DIR,
+                user_data_dir=self.session_dir,
                 headless=HEADLESS,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                ],
+                args=["--disable-blink-features=AutomationControlled"],
                 viewport={"width": 1280, "height": 900},
                 ignore_default_args=["--enable-automation"],
             )
@@ -197,53 +195,41 @@ class HungryClicker:
             self._log("Browser ready. Waiting for F8 to start…")
 
             try:
-                while self.running:
-                    # Keep the Tkinter window responsive.
-                    if not self._status.pump():
-                        self._log("Status window closed – shutting down.")
-                        break
-
-                    self._status.update(self.active, self.roll_count)
-
+                while self.master.running:
                     try:
-                        self._pending_roll_batches.get_nowait()
+                        self.master.pending_bursts[self.index].get_nowait()
                         self._send_roll_burst(page)
                     except Empty:
                         pass
 
-                    if not self.active:
-                        time.sleep(0.15)
+                    if not self.master.active:
+                        time.sleep(0.5)
                         continue
 
                     self._ensure_connected(page)
                     self._scroll_to_bottom(page)
 
-                    # Try to click; if the button isn't visible, autoscroll
-                    # several times before giving up for this cycle.
                     if not self._try_click_roll(page):
                         self._autoscroll_and_retry(page)
 
                     delay = COOLDOWN + random.uniform(RANDOM_DELAY_MIN, RANDOM_DELAY_MAX)
                     self._interruptible_sleep(delay)
-            except KeyboardInterrupt:
-                self._log("Interrupted by user.")
+            except Exception as exc:
+                self._log(f"Unexpected error: {exc}")
             finally:
-                self._log(f"Shutting down. Total rolls: {self.roll_count}")
+                self._log(f"Shutting down. Rolls: {self.roll_count}")
                 context.close()
 
     # ── navigation / reconnection ───────────────────────────────
 
     def _navigate(self, page) -> None:
-        """Go to the configured Discord channel URL."""
-        self._log(f"Navigating to {CHANNEL_URL}")
+        self._log(f"Navigating to {self.url}")
         try:
-            page.goto(CHANNEL_URL, wait_until="domcontentloaded", timeout=30_000)
+            page.goto(self.url, wait_until="domcontentloaded", timeout=30_000)
         except PwTimeout:
             self._log("Page load timed out – will retry on next loop.")
 
     def _ensure_connected(self, page) -> None:
-        """Detect Discord disconnection and attempt to recover."""
-        # Discord shows various reconnection banners when disconnected.
         disconnected = page.locator("text=Reconnecting").first
         try:
             if disconnected.is_visible(timeout=500):
@@ -252,15 +238,12 @@ class HungryClicker:
                 page.reload(wait_until="domcontentloaded", timeout=30_000)
                 self._log("Reconnected.")
         except (PwTimeout, Exception):
-            pass  # not disconnected – carry on
+            pass
 
     # ── scrolling ───────────────────────────────────────────────
 
     @staticmethod
     def _scroll_to_bottom(page) -> None:
-        """Scroll the Discord message list to the very bottom so the newest
-        Roll! button is in view.
-        """
         page.evaluate(
             """
             (() => {
@@ -271,7 +254,7 @@ class HungryClicker:
             """
         )
 
-    # ── clicking ────────────────────────────────────────────────
+    # ── burst / slash-command logic ─────────────────────────────
 
     @staticmethod
     def _burst_commands() -> list[str]:
@@ -299,7 +282,7 @@ class HungryClicker:
         time.sleep(max(BATCH_INITIAL_DELAY_MS, 0) / 1000)
 
         for idx, command in enumerate(commands, start=1):
-            if not self.running:
+            if not self.master.running:
                 return
             if not self._submit_roll_command(page, command):
                 self._log(f"Failed to send burst command {idx}/{len(commands)}: {command}")
@@ -311,9 +294,13 @@ class HungryClicker:
         self.batch_count += 1
         self._log(f"/roll burst complete #{self.batch_count}")
 
-    @staticmethod
-    def _submit_roll_command(page, command: str) -> bool:
-        """Focus Discord composer, select the slash command from autocomplete, and submit."""
+    def _submit_roll_command(self, page, command: str) -> bool:
+        """Focus Discord composer, click the autocomplete item, and submit.
+
+        Primary path: wait for the autocomplete popup, then click the matching
+        command item directly so Discord registers it as an app command (not
+        plain text).  Falls back to Tab→Enter if the direct click fails.
+        """
         selectors = (
             'div[role="textbox"][data-slate-editor="true"][aria-label^="Message"]',
             'div[role="textbox"][data-slate-editor="true"]',
@@ -333,9 +320,25 @@ class HungryClicker:
         page.keyboard.press("Backspace")
         page.keyboard.type(command)
 
-        # Wait for Discord's slash-command autocomplete menu to appear, then
-        # press Tab to select the bot command before submitting with Enter.
-        # This ensures the message is sent as an app command, not plain text.
+        # Primary: locate the specific command button in the autocomplete popup
+        # and click it so Discord treats it as a slash-command invocation.
+        autocomplete_item = (
+            page.locator(
+                '[class*="autocomplete"] [role="button"],'
+                ' [data-list-id="autocomplete-results"] [role="option"]'
+            )
+            .filter(has_text=command)
+            .first
+        )
+        try:
+            autocomplete_item.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
+            autocomplete_item.click()
+            page.keyboard.press("Enter")
+            return True
+        except (PwTimeout, Exception):
+            self._log("Autocomplete item not found – trying Tab+Enter fallback.")
+
+        # Fallback: press Tab to select the first autocomplete suggestion, then Enter.
         autocomplete = page.locator(
             '[class*="autocomplete"], [data-list-id="autocomplete-results"], ul[role="listbox"]'
         ).first
@@ -348,11 +351,10 @@ class HungryClicker:
         page.keyboard.press("Enter")
         return True
 
-    def _try_click_roll(self, page) -> bool:
-        """Locate and click every visible Roll! button, using multiple strategies.
+    # ── clicking ────────────────────────────────────────────────
 
-        Iterates through all matching buttons so that multiple pending "Roll!"
-        buttons (from several bot messages) are each clicked in a single cycle.
+    def _try_click_roll(self, page) -> bool:
+        """Locate and click every visible Roll! button.
 
         Returns True if at least one click was performed, False otherwise.
         """
@@ -381,7 +383,7 @@ class HungryClicker:
             if clicked:
                 return True
 
-        # Strategy 2: look for a blue-styled button that contains "Roll!"
+        # Strategy 2: blue-styled button containing "Roll!"
         fallback_buttons = page.locator(
             'button[style*="background-color"]:has-text("Roll!")'
         )
@@ -407,50 +409,93 @@ class HungryClicker:
         return clicked
 
     def _autoscroll_and_retry(self, page) -> None:
-        """Aggressively scroll to the bottom multiple times and re-check for
-        the Roll! button after each scroll.  Useful when Discord lazy-loads
-        messages or the chat hasn't caught up yet.
-        """
         for attempt in range(1, AUTOSCROLL_RETRIES + 1):
             self._log(
                 f"Button not visible – autoscroll attempt {attempt}/{AUTOSCROLL_RETRIES}"
             )
-            # Press End key as an alternative scroll method.
             page.keyboard.press("End")
             time.sleep(0.3)
             self._scroll_to_bottom(page)
             time.sleep(0.5)
-
             if self._try_click_roll(page):
-                return  # success after scrolling
+                return
 
         self._log("Roll! button not found after autoscroll – will retry next cycle.")
 
     # ── helpers ─────────────────────────────────────────────────
 
     def _interruptible_sleep(self, seconds: float) -> None:
-        """Sleep in small increments so the Tkinter window stays responsive
-        and the hotkey can pause immediately.
-        """
         end = time.time() + seconds
-        while time.time() < end and self.running:
-            if not self._status.pump():
-                self.running = False
-                break
-            self._status.update(self.active, self.roll_count)
-            time.sleep(0.05)
+        while time.time() < end and self.master.running:
+            time.sleep(0.1)
+
+
+class HungryClickerMaster:
+    """Orchestrates multiple ClickerThreads and the global UI/hotkeys."""
+
+    def __init__(self) -> None:
+        self.active = False
+        self.running = True
+        self.urls = CHANNEL_URLS
+        self.status = StatusWindow(len(self.urls))
+        self.pending_bursts: list[SimpleQueue[int]] = [SimpleQueue() for _ in self.urls]
+        self.threads = [
+            ClickerThread(i, url, self) for i, url in enumerate(self.urls)
+        ]
+
+    def start_hotkey_listener(self) -> None:
+        """Listen for F8 (toggle) and F9 (burst) in a background thread."""
+
+        def _on_press(key: keyboard.Key) -> None:
+            if key == TOGGLE_KEY:
+                self.active = not self.active
+                state = "ACTIVE" if self.active else "PAUSED"
+                ConsoleLogger.log(f"F8 → GLOBAL {state}")
+            elif key == BATCH_TRIGGER_KEY:
+                for q in self.pending_bursts:
+                    q.put(1)
+                ConsoleLogger.log("F9 → GLOBAL BURST TRIGGERED")
+
+        listener = keyboard.Listener(on_press=_on_press)
+        listener.daemon = True
+        listener.start()
+        ConsoleLogger.log(
+            f"Hotkeys ready – {TOGGLE_KEY.name.upper()} toggle, "
+            f"{BATCH_TRIGGER_KEY.name.upper()} multi-/roll burst"
+        )
+
+    def run(self) -> None:
+        ConsoleLogger.log(f"Starting {len(self.threads)} channel thread(s)…")
+        for t in self.threads:
+            t.start()
+
+        try:
+            while self.running:
+                if not self.status.pump():
+                    ConsoleLogger.log("Status window closed – shutting down.")
+                    self.running = False
+                    break
+
+                counts = [t.roll_count for t in self.threads]
+                self.status.update(self.active, counts)
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            ConsoleLogger.log("Interrupted by user.")
+            self.running = False
+        finally:
+            ConsoleLogger.log("Master shutting down.")
 
 
 # ──────────────────────────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
-    """Set up the status window, hotkey listener, and start the clicker."""
-    status = StatusWindow()
-    clicker = HungryClicker(status)
-    clicker.start_hotkey_listener()
-    clicker.run()
+    """Set up the master, hotkey listener, and start all channel threads."""
+    master = HungryClickerMaster()
+    master.start_hotkey_listener()
+    master.run()
 
 
 if __name__ == "__main__":
