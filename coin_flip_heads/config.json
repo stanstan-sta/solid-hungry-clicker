@@ -1,0 +1,9 @@
+{
+  "channel_url": "https://discord.com/channels/YOUR_SERVER_ID/YOUR_CHANNEL_ID",
+  "bet_amount": 100,
+  "headless": false,
+  "session_dir": "discord_session_gamble",
+  "action_timeout_ms": 7000,
+  "round_timeout_seconds": 30,
+  "retry_delay_seconds": 1.5
+}
