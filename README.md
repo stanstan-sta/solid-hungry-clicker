@@ -70,6 +70,58 @@ BATCH_COMMAND_DELAY_MS = 40   # wait between /roll commands
 
 ---
 
+## Standalone Coin Flip Gamble App (Heads Strategy)
+
+This repository now includes a separate standalone app at:
+
+`coin_flip_heads/app.py`
+
+It automates the Discord casino Coin Flip workflow with a fixed **Heads** strategy:
+
+1. Fill bet amount
+2. Submit bet
+3. Click **Heads**
+4. Read win/loss result
+5. Click **Retry** on loss
+6. Repeat until stopped
+
+### Configure bet amount
+
+- UI mode: enter the bet in the **Bet Amount** field before pressing **Start**
+- Config mode: edit `coin_flip_heads/config.json` (`bet_amount`)
+
+The config can be changed any time before starting a new session.
+
+### Run
+
+```bash
+python coin_flip_heads/app.py
+```
+
+### Headless / no-UI mode
+
+```bash
+python coin_flip_heads/app.py --no-ui
+```
+
+Use `Ctrl+C` in no-UI mode, or the **Stop** button in UI mode, to safely stop the loop.
+
+### Setup notes
+
+- Uses **Python Playwright** (`playwright.sync_api`)
+- Reuses a persistent browser session in `discord_session_gamble/`
+- Logs each round with bet, win/loss, and parsed `Your coins` total (when present)
+- Handles reconnect/timeouts by retrying the next loop
+
+### UI references
+
+- Main Gamble screen: https://github.com/user-attachments/assets/998102d8-bb97-4cfe-85ff-53def0b97eeb
+- Bet entry screen: https://github.com/user-attachments/assets/d5967e2d-edd8-4dee-a856-cf866135e060
+- Heads/Tails choice: https://github.com/user-attachments/assets/b0717e36-44a5-4c49-9f72-3d4631a4211f
+- Retry screen: https://github.com/user-attachments/assets/e82750d8-1575-4438-a890-32ca184d3e1d
+
+---
+
 ## Running Minimised / in Background
 
 - **Windows/macOS:** Simply minimize the Chromium window. The clicker keeps running. The tiny status window stays on top so you can see progress.
