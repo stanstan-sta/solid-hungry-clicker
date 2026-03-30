@@ -81,9 +81,10 @@ RECONNECT_WAIT: int = 10
 
 # Button labels to auto-click for Hungry-RNG game flows.
 GAME_BUTTON_TEXT_PATTERN = re.compile(
-    r"Roll!|Play Again|Take coins|Heads\s*-\s*go again|Tails\s*-\s*go again",
+    r"Roll!|Play Again|Take coins|(Heads|Tails)\s*-\s*go again",
     re.I,
 )
+DEFAULT_GAMBLE_MODE: str = "coinflip"
 
 # ──────────────────────────────────────────────────────────────────
 
@@ -362,17 +363,18 @@ class ClickerThread(threading.Thread):
             pass  # no autocomplete appeared – fall through to plain Enter
 
         if slash_command == "/gamble":
-            mode = command_args[0] if command_args else "coinflip"
+            mode = command_args[0] if command_args else DEFAULT_GAMBLE_MODE
             self._select_gamble_mode(page, mode)
         elif command_args:
-            page.keyboard.type(f" {' '.join(command_args)}")
+            args_text = " ".join(command_args)
+            page.keyboard.type(f" {args_text}")
 
         time.sleep(0.1)  # let Discord register command/options before submitting
         page.keyboard.press("Enter")
         return True
 
-    def _select_gamble_mode(self, page, mode: str) -> None:
-        normalized_mode = mode.strip() or "coinflip"
+    def _select_gamble_mode(self, page: object, mode: str) -> None:
+        normalized_mode = mode.strip() or DEFAULT_GAMBLE_MODE
         page.keyboard.type(f" {normalized_mode}")
 
         option_item = (
