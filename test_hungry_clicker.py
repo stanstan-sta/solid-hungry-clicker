@@ -44,13 +44,13 @@ def _make_thread() -> hungry_clicker.ClickerThread:
 
 
 class ClickerThreadBatchTests(unittest.TestCase):
-    def test_burst_commands_keeps_only_roll_lines(self) -> None:
+    def test_burst_commands_keeps_only_slash_command_lines(self) -> None:
         original = hungry_clicker.ROLL_COMMANDS_TEXT
         try:
-            hungry_clicker.ROLL_COMMANDS_TEXT = "/roll\n  /roll 1d6  \nhello\n,/roll 2d4\n"
+            hungry_clicker.ROLL_COMMANDS_TEXT = "/roll\n  /gamble coinflip  \nhello\n,/roll 2d4\n"
             self.assertEqual(
                 hungry_clicker.ClickerThread._burst_commands(),
-                ["/roll", "/roll 1d6", "/roll 2d4"],
+                ["/roll", "/gamble coinflip", "/roll 2d4"],
             )
         finally:
             hungry_clicker.ROLL_COMMANDS_TEXT = original
@@ -213,6 +213,24 @@ class SubmitRollCommandTests(unittest.TestCase):
         self.assertNotIn("Tab", key_calls)
         self.assertIn("Enter", key_calls)
 
+    def test_gamble_coinflip_types_command_and_mode(self) -> None:
+        page = self._make_page(autocomplete_item_visible=True)
+        thread = _make_thread()
+        result = thread._submit_roll_command(page, "/gamble coinflip")
+        self.assertTrue(result)
+        typed = [call.args[0] for call in page.keyboard.type.call_args_list]
+        self.assertIn("/gamble", typed)
+        self.assertIn(" coinflip", typed)
+
+    def test_gamble_defaults_to_coinflip_when_no_mode_provided(self) -> None:
+        page = self._make_page(autocomplete_item_visible=True)
+        thread = _make_thread()
+        result = thread._submit_roll_command(page, "/gamble")
+        self.assertTrue(result)
+        typed = [call.args[0] for call in page.keyboard.type.call_args_list]
+        self.assertIn("/gamble", typed)
+        self.assertIn(" coinflip", typed)
+
 
 class TryClickRollTests(unittest.TestCase):
     def _make_thread(self) -> hungry_clicker.ClickerThread:
@@ -235,7 +253,17 @@ class TryClickRollTests(unittest.TestCase):
 
         buttons_loc.nth.side_effect = _nth
 
-        page.locator.return_value = buttons_loc
+        all_buttons = MagicMock()
+        all_buttons.filter.return_value = buttons_loc
+        fallback_buttons = MagicMock()
+        fallback_buttons.filter.return_value = buttons_loc
+
+        def _locator(selector: str) -> MagicMock:
+            if selector == "button":
+                return all_buttons
+            return fallback_buttons
+
+        page.locator.side_effect = _locator
         return page
 
     def test_clicks_all_visible_buttons(self) -> None:
@@ -273,11 +301,29 @@ class TryClickRollTests(unittest.TestCase):
         no_buttons = MagicMock()
         no_buttons.first = MagicMock()
         no_buttons.first.wait_for.side_effect = hungry_clicker.PwTimeout("timeout")
-        page.locator.return_value = no_buttons
+
+        all_buttons = MagicMock()
+        all_buttons.filter.return_value = no_buttons
+        fallback_buttons = MagicMock()
+        fallback_buttons.filter.return_value = no_buttons
+
+        def _locator(selector: str) -> MagicMock:
+            if selector == "button":
+                return all_buttons
+            return fallback_buttons
+
+        page.locator.side_effect = _locator
 
         result = thread._try_click_roll(page)
         self.assertFalse(result)
         self.assertEqual(thread.roll_count, 0)
+
+    def test_game_button_pattern_covers_new_gamble_labels(self) -> None:
+        pattern = hungry_clicker.GAME_BUTTON_TEXT_PATTERN
+        self.assertIsNotNone(pattern.search("Heads - go again"))
+        self.assertIsNotNone(pattern.search("Tails - go again"))
+        self.assertIsNotNone(pattern.search("Play Again"))
+        self.assertIsNotNone(pattern.search("Take coins"))
 
 
 if __name__ == "__main__":
