@@ -15,6 +15,7 @@ Press F9 to trigger a /roll burst across all channels.
 """
 
 import random
+import re
 import threading
 import time
 import tkinter as tk
@@ -77,6 +78,12 @@ AUTOSCROLL_RETRIES: int = 3
 
 # How long (seconds) to wait before attempting reconnection.
 RECONNECT_WAIT: int = 10
+
+# Button labels to auto-click for Hungry-RNG game flows.
+GAME_BUTTON_TEXT_PATTERN = re.compile(
+    r"Roll!|Play Again|Take coins|Heads\s*-\s*go again|Tails\s*-\s*go again",
+    re.I,
+)
 
 # ──────────────────────────────────────────────────────────────────
 
@@ -258,13 +265,13 @@ class ClickerThread(threading.Thread):
 
     @staticmethod
     def _burst_commands() -> list[str]:
-        """Return configured /roll commands from the text setting."""
+        """Return configured slash commands from the text setting."""
         raw = ROLL_COMMANDS_TEXT.replace(",", "\n")
         commands = []
         for item in (part.strip() for part in raw.splitlines()):
             if not item:
                 continue
-            if item.startswith("/roll"):
+            if item.startswith("/"):
                 commands.append(item)
         return commands
 
@@ -316,9 +323,13 @@ class ClickerThread(threading.Thread):
         else:
             return False
 
+        parts = command.strip().split()
+        slash_command = parts[0] if parts else command.strip()
+        command_args = parts[1:]
+
         page.keyboard.press("ControlOrMeta+A")
         page.keyboard.press("Backspace")
-        page.keyboard.type(command)
+        page.keyboard.type(slash_command)
 
         # Primary: locate the specific command button in the autocomplete popup
         # and click it so Discord treats it as a slash-command invocation.
@@ -327,15 +338,14 @@ class ClickerThread(threading.Thread):
                 '[class*="autocomplete"] [role="button"],'
                 ' [data-list-id="autocomplete-results"] [role="option"]'
             )
-            .filter(has_text=command)
+            .filter(has_text=slash_command)
             .first
         )
+        command_selected = False
         try:
             autocomplete_item.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
             autocomplete_item.click()
-            time.sleep(0.1)  # let Discord register the selection before submitting
-            page.keyboard.press("Enter")
-            return True
+            command_selected = True
         except (PwTimeout, Exception):
             self._log("Autocomplete item not found – trying Tab+Enter fallback.")
 
@@ -344,13 +354,48 @@ class ClickerThread(threading.Thread):
             '[class*="autocomplete"], [data-list-id="autocomplete-results"], ul[role="listbox"]'
         ).first
         try:
-            autocomplete.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
-            page.keyboard.press("Tab")
+            if not command_selected:
+                autocomplete.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
+                page.keyboard.press("Tab")
+                command_selected = True
         except (PwTimeout, Exception):
             pass  # no autocomplete appeared – fall through to plain Enter
 
+        if slash_command == "/gamble":
+            mode = command_args[0] if command_args else "coinflip"
+            self._select_gamble_mode(page, mode)
+        elif command_args:
+            page.keyboard.type(f" {' '.join(command_args)}")
+
+        time.sleep(0.1)  # let Discord register command/options before submitting
         page.keyboard.press("Enter")
         return True
+
+    def _select_gamble_mode(self, page, mode: str) -> None:
+        normalized_mode = mode.strip() or "coinflip"
+        page.keyboard.type(f" {normalized_mode}")
+
+        option_item = (
+            page.locator(
+                '[class*="autocomplete"] [role="button"],'
+                ' [data-list-id="autocomplete-results"] [role="option"],'
+                ' [role="listbox"] [role="option"]'
+            )
+            .filter(has_text=normalized_mode)
+            .first
+        )
+        try:
+            option_item.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
+            option_item.click()
+        except (PwTimeout, Exception):
+            try:
+                autocomplete = page.locator(
+                    '[class*="autocomplete"], [data-list-id="autocomplete-results"], ul[role="listbox"]'
+                ).first
+                autocomplete.wait_for(state="visible", timeout=AUTOCOMPLETE_TIMEOUT_MS)
+                page.keyboard.press("Tab")
+            except (PwTimeout, Exception):
+                pass
 
     # ── clicking ────────────────────────────────────────────────
 
@@ -360,7 +405,7 @@ class ClickerThread(threading.Thread):
         Returns True if at least one click was performed, False otherwise.
         """
         # Strategy 1: text-based locator (most reliable for labelled buttons).
-        buttons = page.locator('button:has-text("Roll!")')
+        buttons = page.locator("button").filter(has_text=GAME_BUTTON_TEXT_PATTERN)
 
         try:
             buttons.first.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
@@ -384,9 +429,9 @@ class ClickerThread(threading.Thread):
             if clicked:
                 return True
 
-        # Strategy 2: blue-styled button containing "Roll!"
-        fallback_buttons = page.locator(
-            'button[style*="background-color"]:has-text("Roll!")'
+        # Strategy 2: blue-styled fallback containing known game action labels.
+        fallback_buttons = page.locator('button[style*="background-color"]').filter(
+            has_text=GAME_BUTTON_TEXT_PATTERN
         )
         try:
             fallback_buttons.first.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
@@ -421,7 +466,7 @@ class ClickerThread(threading.Thread):
             if self._try_click_roll(page):
                 return
 
-        self._log("Roll! button not found after autoscroll – will retry next cycle.")
+        self._log("Game action button not found after autoscroll – will retry next cycle.")
 
     # ── helpers ─────────────────────────────────────────────────
 

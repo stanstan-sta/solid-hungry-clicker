@@ -52,14 +52,18 @@ Every successful click is also logged to the console.
 
 ### Multi-`/roll` burst mode
 
-Press **F9** to queue and send multiple `/roll` commands in rapid succession (milliseconds apart).
+Press **F9** to queue and send slash commands in rapid succession (milliseconds apart).
 
 Configure the burst commands in `ROLL_COMMANDS_TEXT` using new lines or commas:
 
 ```python
 ROLL_COMMANDS_TEXT = "/roll\n/roll 1d6\n/roll 2d20"
 # or: "/roll,/roll 1d6,/roll 2d20"
+# example with gamble mode autocomplete:
+# "/gamble coinflip"
 ```
+
+When `/gamble` is configured, the clicker will auto-select the command and type/select the mode option (defaults to `coinflip`).
 
 Timing controls:
 
