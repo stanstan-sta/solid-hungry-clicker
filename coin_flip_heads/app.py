@@ -127,7 +127,9 @@ class CoinFlipHeadsBot:
         self._send_gamble_command(page)
 
         # Select the Coin Flip game mode (required for new UI)
+        # After clicking, need to wait for the bet input field to appear
         self._click_button(page, ["Coin Flip", "coinflip"], required=True)
+        time.sleep(0.8)  # Wait for bet input field to appear after game selection
 
         # Enter bet amount and submit
         self._fill_bet(page, self.config.bet_amount)
@@ -209,7 +211,7 @@ class CoinFlipHeadsBot:
             # Press Enter to send the command
             time.sleep(0.1)  # Let Discord register the Tab selection
             page.keyboard.press("Enter")
-            time.sleep(0.5)  # Wait for bot response
+            time.sleep(1.5)  # Wait for bot to process command and display game selection UI
 
             self.logger.log("Sent /gamble command")
         except Exception as exc:  # noqa: BLE001
