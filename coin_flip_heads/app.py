@@ -123,11 +123,22 @@ class CoinFlipHeadsBot:
         self._ensure_connected(page)
         self._scroll_to_bottom(page)
 
-        self._click_button(page, ["Coin Flip"], required=False)
+        # Send /gamble command to start the game
+        self._send_gamble_command(page)
+
+        # Select the Coin Flip game mode (required for new UI)
+        # After clicking, need to wait for the bet input field to appear
+        self._click_button(page, ["Coin Flip", "coinflip"], required=True)
+        time.sleep(0.5)  # Wait for bet input field to appear after game selection
+
+        # Enter bet amount and submit
         self._fill_bet(page, self.config.bet_amount)
         self._click_button(page, ["Submit", "Bet", "Confirm"], required=True)
+
+        # Choose Heads
         self._click_button(page, ["Heads"], required=True)
 
+        # Wait for result
         result, total_coins = self._wait_for_round_result(page)
         self.round_count += 1
         total_label = total_coins if total_coins is not None else "unknown"
@@ -135,7 +146,14 @@ class CoinFlipHeadsBot:
             f"Round #{self.round_count}: bet={self.config.bet_amount} result={result.upper()} total_coins={total_label}"
         )
 
-        if result == "loss":
+        # Handle win/loss scenarios
+        if result == "win":
+            clicked = self._click_button(page, ["Take coins", "Take Coins", "Claim"], required=False)
+            if clicked:
+                self.logger.log("Take coins clicked after win.")
+            else:
+                self.logger.log("Win detected but Take coins button was not found.")
+        elif result == "loss":
             clicked = self._click_button(page, ["Retry"], required=False)
             if clicked:
                 self.logger.log("Retry clicked after loss.")
@@ -164,29 +182,70 @@ class CoinFlipHeadsBot:
             """
         )
 
+    def _send_gamble_command(self, page) -> None:
+        """Send /gamble command to Discord chat to start the game."""
+        try:
+            # Find the message input box
+            input_selector = 'div[role="textbox"][data-slate-editor="true"]'
+            message_input = page.locator(input_selector).first
+            message_input.wait_for(state="visible", timeout=self.config.action_timeout_ms)
+
+            # Click to focus the input
+            message_input.click()
+            time.sleep(0.1)
+
+            # Type the /gamble command
+            page.keyboard.type("/gamble")
+            time.sleep(0.3)  # Wait for autocomplete to appear
+
+            # Try to select the command from autocomplete with Tab
+            try:
+                autocomplete = page.locator('[class*="autocomplete"]').first
+                autocomplete.wait_for(state="visible", timeout=1000)
+                page.keyboard.press("Tab")
+                self.logger.log("Selected /gamble from autocomplete")
+            except Exception:  # noqa: BLE001
+                # Autocomplete didn't appear, proceed with Enter anyway
+                pass
+
+            # Press Enter to send the command
+            time.sleep(0.1)  # Let Discord register the Tab selection
+            page.keyboard.press("Enter")
+            time.sleep(1.5)  # Wait for bot to process command and display game selection UI
+
+            self.logger.log("Sent /gamble command")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Unable to send /gamble command: {type(exc).__name__}: {exc}"
+            )
+
     def _fill_bet(self, page, amount: int) -> None:
+        """Fill bet amount into the input field using multiple fallback strategies."""
         amount_text = str(amount)
         candidate_inputs = [
-            page.get_by_label(re.compile(r"bet|amount|wager", re.I)).first,
-            page.get_by_placeholder(re.compile(r"bet|amount|wager", re.I)).first,
-            page.locator(
+            ("label match (bet/amount/wager)", page.get_by_label(re.compile(r"bet|amount|wager", re.I)).first),
+            ("placeholder match (bet/amount/wager)", page.get_by_placeholder(re.compile(r"bet|amount|wager", re.I)).first),
+            ("selector match (input[bet/amount/number])", page.locator(
                 'input[aria-label*="bet" i], input[placeholder*="bet" i], input[type="number"]'
-            ).first,
-            page.get_by_role("spinbutton").first,
-            page.get_by_role("textbox", name=re.compile(r"bet|amount|wager", re.I)).first,
+            ).first),
+            ("role spinbutton", page.get_by_role("spinbutton").first),
+            ("textbox role (bet/amount/wager)", page.get_by_role("textbox", name=re.compile(r"bet|amount|wager", re.I)).first),
         ]
 
-        for control in candidate_inputs:
+        for selector_desc, control in candidate_inputs:
             try:
                 control.wait_for(state="visible", timeout=self.config.action_timeout_ms)
                 control.click()
                 control.fill(amount_text)
+                self.logger.log(f"Bet amount {amount} filled using {selector_desc}")
                 return
             except Exception:  # noqa: BLE001
                 continue
 
         raise RuntimeError(
-            "Unable to locate bet input field. Ensure the Discord bot interface is loaded and the page selectors are current."
+            f"Unable to locate bet input field after trying {len(candidate_inputs)} different selectors. "
+            "Ensure the Discord bot interface is loaded and the page selectors are current. "
+            "The /gamble command may not have been processed, or the game selection UI may not be showing the bet input."
         )
 
     def _click_button(self, page, labels: list[str], required: bool) -> bool:
@@ -252,10 +311,13 @@ class CoinFlipHeadsBot:
     @staticmethod
     def _determine_round_result(status_text: str, retry_visible: bool) -> str | None:
         lowered = status_text.lower()
-        if re.search(r"\b(you\s+lose|you\s+lost|lost\b|loss\b)\b", lowered):
+        # Check for loss patterns - expanded to catch more variations
+        if re.search(r"\b(you\s+lose|you\s+lost|lost\b|loss\b|better\s+luck|try\s+again)\b", lowered):
             return "loss"
-        if re.search(r"\b(you\s+win|you\s+won|won\b|win\b)\b", lowered):
+        # Check for win patterns
+        if re.search(r"\b(you\s+win|you\s+won|won\b|win\b|congrat|winner)\b", lowered):
             return "win"
+        # Retry button visible also indicates a loss
         if retry_visible:
             return "loss"
         return None
