@@ -368,6 +368,18 @@ class CoinFlipHeadsUI:
         self.headless_var = tk.BooleanVar(value=self.config.headless)
         tk.Checkbutton(frm, text="Headless", variable=self.headless_var).grid(row=1, column=2, sticky="w")
 
+        tk.Label(frm, text="Action Timeout (ms)").grid(row=2, column=0, sticky="w")
+        self.action_timeout_var = tk.StringVar(value=str(self.config.action_timeout_ms))
+        tk.Entry(frm, textvariable=self.action_timeout_var, width=14).grid(row=2, column=1, sticky="w", pady=2)
+
+        tk.Label(frm, text="Round Timeout (s)").grid(row=2, column=2, sticky="w")
+        self.round_timeout_var = tk.StringVar(value=str(self.config.round_timeout_seconds))
+        tk.Entry(frm, textvariable=self.round_timeout_var, width=14).grid(row=2, column=3, sticky="w", pady=2)
+
+        tk.Label(frm, text="Retry Delay (s)").grid(row=2, column=4, sticky="w")
+        self.retry_delay_var = tk.StringVar(value=str(self.config.retry_delay_seconds))
+        tk.Entry(frm, textvariable=self.retry_delay_var, width=14).grid(row=2, column=5, sticky="w", pady=2)
+
         self.start_btn = tk.Button(frm, text="Start", width=12, command=self.start)
         self.start_btn.grid(row=1, column=3, padx=4)
         self.stop_btn = tk.Button(frm, text="Stop", width=12, command=self.stop, state="disabled")
@@ -406,15 +418,24 @@ class CoinFlipHeadsUI:
         bet_amount = int(self.bet_var.get().strip())
         if bet_amount <= 0:
             raise ValueError("bet amount must be > 0")
+        action_timeout_ms = int(self.action_timeout_var.get().strip())
+        if action_timeout_ms < 500:
+            raise ValueError("action timeout must be >= 500ms")
+        round_timeout_seconds = int(self.round_timeout_var.get().strip())
+        if round_timeout_seconds < 5:
+            raise ValueError("round timeout must be >= 5s")
+        retry_delay_seconds = float(self.retry_delay_var.get().strip())
+        if retry_delay_seconds < 0.1:
+            raise ValueError("retry delay must be >= 0.1s")
 
         self.config = GambleConfig(
             channel_url=channel_url,
             bet_amount=bet_amount,
             headless=bool(self.headless_var.get()),
             session_dir=self.config.session_dir,
-            action_timeout_ms=self.config.action_timeout_ms,
-            round_timeout_seconds=self.config.round_timeout_seconds,
-            retry_delay_seconds=self.config.retry_delay_seconds,
+            action_timeout_ms=action_timeout_ms,
+            round_timeout_seconds=round_timeout_seconds,
+            retry_delay_seconds=retry_delay_seconds,
         )
 
     def start(self) -> None:
