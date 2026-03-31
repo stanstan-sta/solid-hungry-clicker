@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from coin_flip_heads.app import CoinFlipHeadsBot, GambleConfig, load_config, save_config, AppLogger
 
@@ -68,6 +69,78 @@ class CoinFlipHeadsLogicTests(unittest.TestCase):
         bot.request_stop()
         self.assertTrue(bot._stop.is_set())
 
+    def test_play_round_handles_win_scenario(self) -> None:
+        """Test that winning triggers 'Take coins' button click."""
+        bot = CoinFlipHeadsBot(self._config(), AppLogger())
+        mock_page = MagicMock()
+
+        # Mock the helper methods to simulate a win scenario
+        bot._ensure_connected = MagicMock()
+        bot._scroll_to_bottom = MagicMock()
+        bot._send_gamble_command = MagicMock()
+        bot._click_button = MagicMock(return_value=True)
+        bot._fill_bet = MagicMock()
+        bot._wait_for_round_result = MagicMock(return_value=("win", 5000))
+
+        # Execute the round
+        bot._play_round(mock_page)
+
+        # Verify that _click_button was called with "Take coins" related labels
+        calls = bot._click_button.call_args_list
+        take_coins_call = None
+        for call in calls:
+            if "Take coins" in call[0][1] or "Take Coins" in call[0][1]:
+                take_coins_call = call
+                break
+
+        self.assertIsNotNone(take_coins_call, "Take coins button should be clicked on win")
+
+    def test_play_round_handles_loss_scenario(self) -> None:
+        """Test that losing triggers 'Retry' button click."""
+        bot = CoinFlipHeadsBot(self._config(), AppLogger())
+        mock_page = MagicMock()
+
+        # Mock the helper methods to simulate a loss scenario
+        bot._ensure_connected = MagicMock()
+        bot._scroll_to_bottom = MagicMock()
+        bot._send_gamble_command = MagicMock()
+        bot._click_button = MagicMock(return_value=True)
+        bot._fill_bet = MagicMock()
+        bot._wait_for_round_result = MagicMock(return_value=("loss", 4900))
+
+        # Execute the round
+        bot._play_round(mock_page)
+
+        # Verify that _click_button was called with "Retry" label
+        calls = bot._click_button.call_args_list
+        retry_call = None
+        for call in calls:
+            if "Retry" in call[0][1]:
+                retry_call = call
+                break
+
+        self.assertIsNotNone(retry_call, "Retry button should be clicked on loss")
+
+    def test_send_gamble_command_invoked_each_round(self) -> None:
+        """Test that /gamble command is sent at the start of each round."""
+        bot = CoinFlipHeadsBot(self._config(), AppLogger())
+        mock_page = MagicMock()
+
+        # Mock the helper methods
+        bot._ensure_connected = MagicMock()
+        bot._scroll_to_bottom = MagicMock()
+        bot._send_gamble_command = MagicMock()
+        bot._click_button = MagicMock(return_value=True)
+        bot._fill_bet = MagicMock()
+        bot._wait_for_round_result = MagicMock(return_value=("win", 5000))
+
+        # Execute the round
+        bot._play_round(mock_page)
+
+        # Verify that _send_gamble_command was called
+        bot._send_gamble_command.assert_called_once_with(mock_page)
+
 
 if __name__ == "__main__":
     unittest.main()
+
