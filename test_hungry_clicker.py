@@ -10,6 +10,11 @@ def _install_stubs() -> None:
     fake_tk.TclError = Exception
     fake_tk.Tk = object
     fake_tk.Label = object
+    
+    # Mock Checkbutton and BooleanVar for the new gamble toggle UI
+    fake_tk.Checkbutton = MagicMock()
+    fake_tk.BooleanVar = MagicMock()
+    
     sys.modules.setdefault("tkinter", fake_tk)
 
     fake_keyboard = types.ModuleType("keyboard")
@@ -36,6 +41,7 @@ class _DummyMaster:
     def __init__(self) -> None:
         self.running = True
         self.active = True
+        self.gamble_enabled = False
         self.pending_bursts = [SimpleQueue()]
 
 
@@ -318,8 +324,8 @@ class TryClickRollTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(thread.roll_count, 0)
 
-    def test_game_button_pattern_covers_new_gamble_labels(self) -> None:
-        pattern = hungry_clicker.GAME_BUTTON_TEXT_PATTERN
+    def test_gamble_button_pattern_covers_new_gamble_labels(self) -> None:
+        pattern = hungry_clicker.GAMBLE_BUTTON_TEXT_PATTERN
         self.assertIsNotNone(pattern.search("Heads - go again"))
         self.assertIsNotNone(pattern.search("Tails - go again"))
         self.assertIsNotNone(pattern.search("Play Again"))
