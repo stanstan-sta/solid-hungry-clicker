@@ -129,7 +129,7 @@ class CoinFlipHeadsBot:
         # Select the Coin Flip game mode (required for new UI)
         # After clicking, need to wait for the bet input field to appear
         self._click_button(page, ["Coin Flip", "coinflip"], required=True)
-        time.sleep(0.8)  # Wait for bet input field to appear after game selection
+        time.sleep(0.5)  # Wait for bet input field to appear after game selection
 
         # Enter bet amount and submit
         self._fill_bet(page, self.config.bet_amount)
@@ -311,10 +311,13 @@ class CoinFlipHeadsBot:
     @staticmethod
     def _determine_round_result(status_text: str, retry_visible: bool) -> str | None:
         lowered = status_text.lower()
-        if re.search(r"\b(you\s+lose|you\s+lost|lost\b|loss\b)\b", lowered):
+        # Check for loss patterns - expanded to catch more variations
+        if re.search(r"\b(you\s+lose|you\s+lost|lost\b|loss\b|better\s+luck|try\s+again)\b", lowered):
             return "loss"
-        if re.search(r"\b(you\s+win|you\s+won|won\b|win\b)\b", lowered):
+        # Check for win patterns
+        if re.search(r"\b(you\s+win|you\s+won|won\b|win\b|congrat|winner)\b", lowered):
             return "win"
+        # Retry button visible also indicates a loss
         if retry_visible:
             return "loss"
         return None
