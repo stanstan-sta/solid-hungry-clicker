@@ -68,7 +68,7 @@ BATCH_COMMAND_DELAY_MS: int = 40
 BUTTON_TIMEOUT: int = 5
 
 # How long (ms) to wait for Discord's slash-command autocomplete menu to appear.
-AUTOCOMPLETE_TIMEOUT_MS: int = 2_000
+AUTOCOMPLETE_TIMEOUT_MS: int = 2000
 
 # Delay (seconds) between clicking successive Roll! buttons in a single cycle.
 MULTI_CLICK_DELAY: float = 0.3
@@ -79,15 +79,19 @@ AUTOSCROLL_RETRIES: int = 3
 # How long (seconds) to wait before attempting reconnection.
 RECONNECT_WAIT: int = 10
 
+# Default toggle for gamble clicks (True = click Play Again, Take coins, etc.)
+ENABLE_GAMBLE_CLICKS: bool = False
+
 # Button labels to auto-click for Hungry-RNG game flows.
-GAME_BUTTON_TEXT_PATTERN = re.compile(
+GAMBLE_BUTTON_TEXT_PATTERN = re.compile(
     r"Roll!|Play Again|Take coins|(Heads|Tails)\s*-\s*go again",
     re.I,
 )
+ROLL_BUTTON_TEXT_PATTERN = re.compile(r"Roll!", re.I)
+
 DEFAULT_GAMBLE_MODE: str = "coinflip"
 
 # ──────────────────────────────────────────────────────────────────
-
 
 class ConsoleLogger:
     """Simple threadsafe console logger with timestamps."""
@@ -97,16 +101,16 @@ class ConsoleLogger:
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[{ts}] {message}", flush=True)
 
-
 class StatusWindow:
     """Always-on-top Tkinter window showing aggregate and per-channel stats."""
 
-    def __init__(self, channel_count: int) -> None:
+    def __init__(self, channel_count: int, master: "HungryClickerMaster") -> None:
+        self.master = master
         self.root = tk.Tk()
         self.root.title("Hungry-RNG Clicker (Multi)")
         self.root.attributes("-topmost", True)
         self.root.resizable(False, False)
-        self.root.geometry(f"350x{100 + (channel_count * 20)}")
+        self.root.geometry(f"350x{130 + (channel_count * 20)}")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._main_label = tk.Label(
@@ -116,6 +120,16 @@ class StatusWindow:
             pady=10,
         )
         self._main_label.pack()
+
+        self.gamble_var = tk.BooleanVar(value=ENABLE_GAMBLE_CLICKS)
+        self.gamble_cb = tk.Checkbutton(
+            self.root,
+            text="Enable Gamble Clicks",
+            variable=self.gamble_var,
+            command=self._on_gamble_toggle,
+            font=("Consolas", 10)
+        )
+        self.gamble_cb.pack(pady=5)
 
         self._stats_labels: list[tk.Label] = []
         for i in range(channel_count):
@@ -166,6 +180,10 @@ class StatusWindow:
         return not self._should_close
 
     # ── private ─────────────────────────────────────────────────
+
+    def _on_gamble_toggle(self) -> None:
+        self.master.gamble_enabled = self.gamble_var.get()
+        ConsoleLogger.log(f"Gamble clicks {'ENABLED' if self.master.gamble_enabled else 'DISABLED'}")
 
     def _on_close(self) -> None:
         self._should_close = True
@@ -233,7 +251,7 @@ class ClickerThread(threading.Thread):
     def _navigate(self, page) -> None:
         self._log(f"Navigating to {self.url}")
         try:
-            page.goto(self.url, wait_until="domcontentloaded", timeout=30_000)
+            page.goto(self.url, wait_until="domcontentloaded", timeout=30000)
         except PwTimeout:
             self._log("Page load timed out – will retry on next loop.")
 
@@ -243,7 +261,7 @@ class ClickerThread(threading.Thread):
             if disconnected.is_visible(timeout=500):
                 self._log("Discord disconnected – waiting to reconnect…")
                 time.sleep(RECONNECT_WAIT)
-                page.reload(wait_until="domcontentloaded", timeout=30_000)
+                page.reload(wait_until="domcontentloaded", timeout=30000)
                 self._log("Reconnected.")
         except (PwTimeout, Exception):
             pass
@@ -316,7 +334,7 @@ class ClickerThread(threading.Thread):
         for selector in selectors:
             composer = page.locator(selector).first
             try:
-                composer.wait_for(state="visible", timeout=3_000)
+                composer.wait_for(state="visible", timeout=3000)
                 composer.click()
                 break
             except (PwTimeout, Exception):
@@ -406,8 +424,10 @@ class ClickerThread(threading.Thread):
 
         Returns True if at least one click was performed, False otherwise.
         """
+        pattern = GAMBLE_BUTTON_TEXT_PATTERN if self.master.gamble_enabled else ROLL_BUTTON_TEXT_PATTERN
+
         # Strategy 1: text-based locator (most reliable for labelled buttons).
-        buttons = page.locator("button").filter(has_text=GAME_BUTTON_TEXT_PATTERN)
+        buttons = page.locator("button").filter(has_text=pattern)
 
         try:
             buttons.first.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
@@ -433,7 +453,7 @@ class ClickerThread(threading.Thread):
 
         # Strategy 2: blue-styled fallback containing known game action labels.
         fallback_buttons = page.locator('button[style*="background-color"]').filter(
-            has_text=GAME_BUTTON_TEXT_PATTERN
+            has_text=pattern
         )
         try:
             fallback_buttons.first.wait_for(state="visible", timeout=BUTTON_TIMEOUT * 1000)
@@ -468,7 +488,7 @@ class ClickerThread(threading.Thread):
             if self._try_click_roll(page):
                 return
 
-        self._log("Game action button not found after autoscroll – will retry next cycle.")
+        self._log("Action button not found after autoscroll – will retry next cycle.")
 
     # ── helpers ─────────────────────────────────────────────────
 
@@ -477,15 +497,15 @@ class ClickerThread(threading.Thread):
         while time.time() < end and self.master.running:
             time.sleep(0.1)
 
-
 class HungryClickerMaster:
     """Orchestrates multiple ClickerThreads and the global UI/hotkeys."""
 
     def __init__(self) -> None:
         self.active = False
         self.running = True
+        self.gamble_enabled = ENABLE_GAMBLE_CLICKS
         self.urls = CHANNEL_URLS
-        self.status = StatusWindow(len(self.urls))
+        self.status = StatusWindow(len(self.urls), self)
         self.pending_bursts: list[SimpleQueue[int]] = [SimpleQueue() for _ in self.urls]
         self.threads = [
             ClickerThread(i, url, self) for i, url in enumerate(self.urls)
@@ -533,18 +553,15 @@ class HungryClickerMaster:
         finally:
             ConsoleLogger.log("Master shutting down.")
 
-
 # ──────────────────────────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────────────────────────
-
 
 def main() -> None:
     """Set up the master, hotkey listener, and start all channel threads."""
     master = HungryClickerMaster()
     master.start_hotkey_listener()
     master.run()
-
 
 if __name__ == "__main__":
     main()
