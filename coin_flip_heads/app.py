@@ -381,10 +381,10 @@ class CoinFlipHeadsUI:
         tk.Entry(frm, textvariable=self.retry_delay_var, width=14).grid(row=2, column=5, sticky="w", pady=2)
 
         self.start_btn = tk.Button(frm, text="Start", width=12, command=self.start)
-        self.start_btn.grid(row=1, column=3, padx=4)
+        self.start_btn.grid(row=3, column=3, padx=4)
         self.stop_btn = tk.Button(frm, text="Stop", width=12, command=self.stop, state="disabled")
-        self.stop_btn.grid(row=1, column=4, padx=4)
-        tk.Button(frm, text="Save Config", width=12, command=self._save_fields_to_config).grid(row=1, column=5, padx=4)
+        self.stop_btn.grid(row=3, column=4, padx=4)
+        tk.Button(frm, text="Save Config", width=12, command=self._save_fields_to_config).grid(row=3, column=5, padx=4)
 
         self.log_widget = tk.Text(self.root, height=18, state="disabled")
         self.log_widget.pack(fill="both", expand=True, padx=10, pady=(0, 10))

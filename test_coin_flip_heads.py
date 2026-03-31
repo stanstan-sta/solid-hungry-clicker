@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from coin_flip_heads.app import CoinFlipHeadsBot, GambleConfig, load_config, save_config, AppLogger
+from coin_flip_heads.app import CoinFlipHeadsBot, GambleConfig, load_config, save_config, AppLogger, CoinFlipHeadsUI
 
 
 class CoinFlipHeadsLogicTests(unittest.TestCase):
@@ -140,7 +140,51 @@ class CoinFlipHeadsLogicTests(unittest.TestCase):
         # Verify that _send_gamble_command was called
         bot._send_gamble_command.assert_called_once_with(mock_page)
 
+    def test_ui_sync_config_reads_timing_fields(self) -> None:
+        ui = CoinFlipHeadsUI.__new__(CoinFlipHeadsUI)
+        ui.config = self._config()
+        ui.url_var = MagicMock()
+        ui.bet_var = MagicMock()
+        ui.headless_var = MagicMock()
+        ui.action_timeout_var = MagicMock()
+        ui.round_timeout_var = MagicMock()
+        ui.retry_delay_var = MagicMock()
+
+        ui.url_var.get.return_value = "https://discord.com/channels/new/url"
+        ui.bet_var.get.return_value = "250"
+        ui.headless_var.get.return_value = False
+        ui.action_timeout_var.get.return_value = "9000"
+        ui.round_timeout_var.get.return_value = "45"
+        ui.retry_delay_var.get.return_value = "2.2"
+
+        ui._sync_config_from_fields()
+
+        self.assertEqual(ui.config.channel_url, "https://discord.com/channels/new/url")
+        self.assertEqual(ui.config.bet_amount, 250)
+        self.assertEqual(ui.config.action_timeout_ms, 9000)
+        self.assertEqual(ui.config.round_timeout_seconds, 45)
+        self.assertEqual(ui.config.retry_delay_seconds, 2.2)
+
+    def test_ui_sync_config_rejects_low_action_timeout(self) -> None:
+        ui = CoinFlipHeadsUI.__new__(CoinFlipHeadsUI)
+        ui.config = self._config()
+        ui.url_var = MagicMock()
+        ui.bet_var = MagicMock()
+        ui.headless_var = MagicMock()
+        ui.action_timeout_var = MagicMock()
+        ui.round_timeout_var = MagicMock()
+        ui.retry_delay_var = MagicMock()
+
+        ui.url_var.get.return_value = "https://discord.com/channels/new/url"
+        ui.bet_var.get.return_value = "100"
+        ui.headless_var.get.return_value = True
+        ui.action_timeout_var.get.return_value = "499"
+        ui.round_timeout_var.get.return_value = "30"
+        ui.retry_delay_var.get.return_value = "1.5"
+
+        with self.assertRaises(ValueError):
+            ui._sync_config_from_fields()
+
 
 if __name__ == "__main__":
     unittest.main()
-
