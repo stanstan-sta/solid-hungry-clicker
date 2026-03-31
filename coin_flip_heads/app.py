@@ -196,7 +196,18 @@ class CoinFlipHeadsBot:
             page.keyboard.type("/gamble")
             time.sleep(0.3)  # Wait for autocomplete to appear
 
+            # Try to select the command from autocomplete with Tab
+            try:
+                autocomplete = page.locator('[class*="autocomplete"]').first
+                autocomplete.wait_for(state="visible", timeout=1000)
+                page.keyboard.press("Tab")
+                self.logger.log("Selected /gamble from autocomplete")
+            except Exception:  # noqa: BLE001
+                # Autocomplete didn't appear, proceed with Enter anyway
+                pass
+
             # Press Enter to send the command
+            time.sleep(0.1)  # Let Discord register the Tab selection
             page.keyboard.press("Enter")
             time.sleep(0.5)  # Wait for bot response
 
